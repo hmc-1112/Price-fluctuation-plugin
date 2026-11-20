@@ -30,7 +30,7 @@
 双击运行即可。程序会：
 
 1. 自动贴在任务栏最左侧空白处
-2. 首次运行自动写入开机自启（启动文件夹快捷方式）
+2. 首次运行自动写入开机自启
 3. 配置与日志存放在 `%APPDATA%\TickerBar\`
 
 ### 方式二：从源码运行
@@ -49,10 +49,10 @@ pythonw tickerbar.py
 | 菜单项 | 说明 |
 |---|---|
 | 刷新频率 | 1 / 2 / 3 / 4 / 5 秒 |
-| 显示内容 | 勾选黄金、上证指数、深证成指（至少保留一项，条宽自动伸缩） |
-| 黄金口径 | 上海金 Au(T+D)（默认）或 伦敦金 × 汇率 折算 |
+| 显示内容 | 勾选黄金、上证指数、深证成指 |
+| 黄金口径 | 上海金 Au(T+D)或 伦敦金 × 汇率 折算 |
 | 悬停显示分时图 | 开关悬停面板 |
-| 立即刷新 | 手动拉一次行情（收盘暂停时也会临时唤醒） |
+| 立即刷新 | 手动拉一次行情 |
 | 开机自动启动 | 勾选后写入启动文件夹 |
 | 退出 | 关闭程序 |
 
@@ -82,7 +82,7 @@ pythonw tickerbar.py
 | `gold_source` | `sge` / `xau` | 黄金口径：上海金 / 伦敦金折算 |
 | `show` | bool | 三组内容的显示开关 |
 | `features.hover` | bool | 是否启用悬停分时 |
-| `x` | int | 上次计算出的横向位置（自动维护，可忽略） |
+| `x` | int | 上次计算出的横向位置 |
 | `autostart` | bool | 开机自启状态 |
 
 ## 数据源
@@ -107,7 +107,7 @@ pip install pyinstaller
 pyinstaller TickerBar.spec --noconfirm --clean
 ```
 
-产物在 `dist/TickerBar.exe`。`TickerBar.spec` 里已通过 `excludes` 裁剪未使用的标准库（unittest / distutils / multiprocessing / asyncio 等），体积从 27 MB 降到 14 MB。
+产物在 `dist/TickerBar.exe`。
 
 ## 项目结构
 
@@ -119,7 +119,7 @@ pyinstaller TickerBar.spec --noconfirm --clean
 ├── build.bat           # 一键编译
 ├── requirements.txt
 ├── docs/               # 截图
-└── 行情条.exe          # 编译产物（也可从 Releases 下载）
+└── TickerBar.exe       # 编译产物（也可从 Releases 下载）
 ```
 
 ## 实现要点
