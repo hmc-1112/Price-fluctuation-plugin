@@ -19,7 +19,7 @@
 | 收盘自动灰化 | 按交易时段 + 行情时间戳双重判断，收盘/停更时价格变灰，**涨跌幅仍保持红绿** |
 | 收盘暂停刷新 | 全部标的收盘后停止网络轮询，显示「已收盘」，到下一个开盘时间自动恢复 |
 | 悬停分时 | 鼠标移到某一组上，上方弹出该标的当日分时线（含昨收基准线） |
-| 轻量 | 常驻内存约 45 MB，CPU 占用接近 0；单文件 exe 约 14 MB |
+| 轻量 | 常驻内存约 75 MB（含 Tk/Pillow 运行时），静止时 CPU 占用接近 0；单文件 exe 14 MB |
 
 ## 快速开始
 
@@ -105,7 +105,7 @@ pip install pyinstaller
 pyinstaller TickerBar.spec --noconfirm --clean
 ```
 
-产物在 `dist/TickerBar.exe`。已通过 `--exclude-module` 裁剪未使用的标准库，体积从 27 MB 降到 14 MB。
+产物在 `dist/TickerBar.exe`。`TickerBar.spec` 里已通过 `excludes` 裁剪未使用的标准库（unittest / distutils / multiprocessing / asyncio 等），体积从 27 MB 降到 14 MB。
 
 ## 项目结构
 
