@@ -25,7 +25,9 @@
 
 ### 方式一：直接用编译好的 exe
 
-下载 `行情条.exe`（或从 Releases 获取），双击运行即可。程序会：
+**[下载 TickerBar.exe](https://github.com/hmc-1112/Price-fluctuation-plugin/releases/latest)**（约 13 MB，免安装）
+
+双击运行即可。程序会：
 
 1. 自动贴在任务栏最左侧空白处
 2. 首次运行自动写入开机自启（启动文件夹快捷方式）
