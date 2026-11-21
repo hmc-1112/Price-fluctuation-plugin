@@ -7,7 +7,7 @@ TickerBar - 任务栏行情条
 
 MIT License
 """
-__version__ = "1.2.1"
+__version__ = "1.1.0"
 import os
 import re
 import sys
