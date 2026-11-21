@@ -220,6 +220,26 @@ def _busy_columns(row, width, thr=16):
     return busy
 
 
+SHELL_PROCS = ("explorer.exe", "startmenuexperiencehost.exe", "shellexperiencehost.exe",
+               "searchhost.exe", "shellhost.exe", "textinputhost.exe")
+
+
+def _proc_name(pid):
+    """取进程可执行文件名（小写），失败返回空串"""
+    try:
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+        if not h:
+            return ""
+        buf = ctypes.create_unicode_buffer(260)
+        size = wintypes.DWORD(260)
+        ctypes.windll.kernel32.QueryFullProcessImageNameW(
+            h, 0, buf, ctypes.byref(size))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return os.path.basename(buf.value).lower()
+    except Exception:
+        return ""
+
+
 def scan_free_slot(need_w):
     """
     返回任务栏上最左侧、能放下 need_w 且不压住图标的屏幕 x。
@@ -1054,6 +1074,10 @@ class Widget:
             user32.GetClassNameW(h, buf, 64)
             if buf.value in ("Shell_TrayWnd", "Progman", "WorkerW",
                              "Windows.UI.Core.CoreWindow"):
+                return False
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+            if _proc_name(pid.value) in SHELL_PROCS:   # 开始菜单/搜索/操作中心等系统界面
                 return False
             r = wintypes.RECT()
             user32.GetWindowRect(h, ctypes.byref(r))
