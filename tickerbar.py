@@ -166,7 +166,6 @@ DEFAULT_CFG = {
     "gold_source": "sge",
     "show": {"gold": True, "sh": True, "sz": True},
     "features": {"hover": True},
-    "reposition_sec": 5,       # 自动检测任务栏占用的间隔（秒），0=关闭
     "x": None,
     "autostart": True,
 }
@@ -1307,13 +1306,6 @@ class Widget:
                 self._render_panel()
             self._update_session()
             self._check_dpi()
-            self._tick_n = getattr(self, "_tick_n", 0) + 1
-            try:
-                iv = int(self.cfg.get("reposition_sec", 5))
-            except Exception:
-                iv = 5
-            if iv > 0 and self._tick_n % iv == 0:
-                self.reposition()
             self.draw()
         except Exception:
             self._log_err("TICK")
@@ -1359,12 +1351,7 @@ class Widget:
         self.menu.add_checkbutton(label="悬停显示分时图", variable=self.v_hover,
                                   command=self.toggle_hover)
 
-        m_ref = tk.Menu(self.menu, tearoff=0, bg="#ffffff", fg="#1b1f24",
-                        activebackground="#e8f0fe", activeforeground="#000000",
-                        bd=0, font=("Microsoft YaHei", 9))
-        m_ref.add_command(label="仅刷新行情", command=self.refresh_now)
-        m_ref.add_command(label="刷新并重新定位", command=self.refresh_move)
-        self.menu.add_cascade(label="立即刷新", menu=m_ref)
+        self.menu.add_command(label="刷新", command=self.refresh_move)
         self.v_boot = tk.BooleanVar(value=self.autostart_on())
         self.menu.add_checkbutton(label="开机自动启动", variable=self.v_boot,
                                   command=self.toggle_autostart)
@@ -1409,6 +1396,7 @@ class Widget:
         self.refresh_now()
 
     def refresh_move(self):
+        self._hide_panel()
         self.refresh_now()
         self.reposition(force=True)
 
