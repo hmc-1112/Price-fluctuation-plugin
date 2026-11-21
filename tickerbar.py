@@ -7,7 +7,7 @@ TickerBar - 任务栏行情条
 
 MIT License
 """
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 import os
 import re
 import sys
@@ -105,6 +105,21 @@ user32.IsZoomed.argtypes = [wintypes.HWND]
 user32.IsZoomed.restype = wintypes.BOOL
 user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
 user32.GetCursorPos.restype = wintypes.BOOL
+user32.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]
+user32.SetParent.restype = wintypes.HWND
+user32.GetParent.argtypes = [wintypes.HWND]
+user32.GetParent.restype = wintypes.HWND
+user32.MoveWindow.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                              ctypes.c_int, ctypes.c_int, wintypes.BOOL]
+user32.MoveWindow.restype = wintypes.BOOL
+user32.ScreenToClient.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+user32.ScreenToClient.restype = wintypes.BOOL
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wintypes.BOOL
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = wintypes.LONG
+user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+user32.SetWindowLongW.restype = wintypes.LONG
 user32.GetDpiForWindow.argtypes = [wintypes.HWND]
 user32.GetDpiForWindow.restype = wintypes.UINT
 user32.GetDpiForSystem.restype = wintypes.UINT
@@ -846,6 +861,10 @@ class Widget:
         self._hide_job = None
         self._trend = {}
         self._trend_busy = set()
+        self._embedded = False        # 是否已挂进任务栏
+        self._embed_fail = 0          # 连续失败次数，超过 3 次永久回退
+        self._bar_hwnd = 0
+        self._cx = self._cy = 0       # 嵌入模式下的客户区坐标
         self._paused = False          # 全部收盘 -> 暂停轮询
         self._resume_at = None        # 下一个开盘时间戳
         self._closed = False
@@ -854,12 +873,21 @@ class Widget:
 
         self.build_menu()
         self._make_panel()
+
         self.draw()
-        self.place(self._w)
+        self.place(self._w)                   # 先用覆盖层定位（尺寸同理）
         self._placed = True
         self.root.deiconify()
+        self.root.update_idletasks()
 
         self.hwnd = self._top_hwnd()
+        self._embedded = self._embed()        # 窗口映射后再挂进任务栏
+        if self._embedded:
+            self._place_embedded(self._w)
+            log("已嵌入任务栏")
+        else:
+            log("嵌入失败，回退置顶覆盖")
+
         self._update_session()
         threading.Thread(target=self.loop, daemon=True).start()
         self.root.after(1000, self.tick)
@@ -908,8 +936,9 @@ class Widget:
 
     def _place_panel(self):
         sw = user32.GetSystemMetrics(0)
-        x = max(4, min(self.root.winfo_x(), sw - sc(PANEL_W) - 6))
-        y = max(4, self.root.winfo_y() - sc(PANEL_H) - 6)
+        bx, by, _, _ = self._bar_rect()
+        x = max(4, min(bx, sw - sc(PANEL_W) - 6))
+        y = max(4, by - sc(PANEL_H) - 6)
         self.panel.geometry("%dx%d+%d+%d" % (sc(PANEL_W), sc(PANEL_H), x, y))
 
     def _render_panel(self, force=False):
@@ -991,8 +1020,9 @@ class Widget:
                 px, py = self.panel.winfo_x(), self.panel.winfo_y()
                 if px <= pt.x <= px + sc(PANEL_W) and py <= pt.y <= py + sc(PANEL_H):
                     return
-            bx, by, bw = self.root.winfo_x(), self.root.winfo_y(), self._w
-            if bx <= pt.x <= bx + bw and by <= pt.y <= by + sc(H):
+            bx, by, br, bb = self._bar_rect()
+            bw, bh = br - bx, bb - by
+            if bx <= pt.x <= bx + bw and by <= pt.y <= by + bh:
                 return
         except Exception:
             pass
@@ -1010,20 +1040,106 @@ class Widget:
         if k and k != self._panel_key:
             self._show_panel(k)
 
+    # ---------- 嵌入任务栏
+    def _bar_rect(self):
+        r = wintypes.RECT()
+        user32.GetWindowRect(wintypes.HWND(self.hwnd), ctypes.byref(r))
+        return r.left, r.top, r.right, r.bottom
+
+    def _embed(self):
+        """把窗口设成任务栏的子窗口；失败返回 False"""
+        try:
+            bar = user32.FindWindowW("Shell_TrayWnd", None)
+            hwnd = self.hwnd or self._top_hwnd()
+            if not bar or not hwnd:
+                return False
+            GWL_STYLE, WS_CHILD, WS_POPUP = -16, 0x40000000, 0x80000000
+            style = user32.GetWindowLongW(wintypes.HWND(hwnd), GWL_STYLE) & 0xFFFFFFFF
+            user32.SetParent(wintypes.HWND(hwnd), wintypes.HWND(bar))
+            user32.SetWindowLongW(wintypes.HWND(hwnd), GWL_STYLE,
+                                  (style & ~WS_POPUP) | WS_CHILD)
+            user32.SetWindowPos(wintypes.HWND(hwnd), None, 0, 0, 0, 0,
+                                0x0001 | 0x0002 | 0x0004 | 0x0020 | 0x0040)
+            if user32.GetParent(wintypes.HWND(hwnd)) != bar:
+                user32.SetWindowLongW(wintypes.HWND(hwnd), GWL_STYLE,
+                                      (style & ~WS_CHILD) | WS_POPUP)
+                return False
+            self._bar_hwnd = bar
+            self.hwnd = hwnd
+            return True
+        except Exception as e:
+            log("embed fail: %s" % e)
+            return False
+
+    def _check_embed(self):
+        """Explorer 重启后任务栏句柄会变，子窗口被销毁，需要重挂"""
+        try:
+            bar = user32.FindWindowW("Shell_TrayWnd", None)
+            if not bar:
+                return
+            if user32.GetParent(wintypes.HWND(self.hwnd)) == bar:
+                self._embed_fail = 0
+                self._embed_resets = 0
+                return
+            self._embed_resets = getattr(self, "_embed_resets", 0) + 1
+            if self._embed_resets > 10:
+                self._embedded = False
+                self.place(self._w)
+                log("多次重挂无效，改为置顶覆盖")
+                return
+            if self._embed():
+                self._place_embedded(self._w)
+                user32.ShowWindow(wintypes.HWND(self.hwnd), 5)
+                self._embed_fail = 0
+                log("任务栏重挂成功")
+            else:
+                self._embed_fail += 1
+                if self._embed_fail >= 3:
+                    self._embedded = False
+                    self.root.deiconify()
+                    self.place(self._w)
+                    log("重挂失败，回退置顶覆盖")
+        except Exception:
+            pass
+
+    def _place_embedded(self, w=None):
+        w = w or self._w
+        l, t, r, b = taskbar_rect()
+        x = scan_free_slot(w)
+        if x + w > r - sc(8):
+            x = max(l + sc(8), r - w - sc(8))
+        y = t + max(0, (b - t - sc(H)) // 2)
+        pt = wintypes.POINT(int(x), int(y))
+        user32.ScreenToClient(wintypes.HWND(self._bar_hwnd), ctypes.byref(pt))
+        self._cx, self._cy = int(pt.x), int(pt.y)
+        user32.MoveWindow(wintypes.HWND(self.hwnd), self._cx, self._cy,
+                          int(w), sc(H), True)
+        self.cfg["x"] = x
+        save_conf(self.cfg)
+
     # ---------- 定位
     def place(self, w=None):
         w = w or self._w
+        if self._embedded:
+            self._place_embedded(w)
+            return
         l, tp, r, b = taskbar_rect()
-        y = tp + max(0, (b - tp - H) // 2)
+        y = tp + max(0, (b - tp - sc(H)) // 2)
         x = scan_free_slot(w)
-        if x + w > r - 8:
-            x = max(l + 8, r - w - 8)
+        if x + w > r - sc(8):
+            x = max(l + sc(8), r - w - sc(8))
         self.root.geometry("%dx%d+%d+%d" % (w, sc(H), x, y))
         self.cfg["x"] = x
         save_conf(self.cfg)
 
     def relayout(self):
-        """宽度变化后重新定位：先隐藏自身再扫描，避免把自己当成图标"""
+        """重新定位：先隐藏自身再扫描，避免把自己当成图标"""
+        if self._embedded:
+            user32.ShowWindow(wintypes.HWND(self.hwnd), 0)
+            time.sleep(0.08)
+            self._place_embedded(self._w)
+            user32.ShowWindow(wintypes.HWND(self.hwnd), 5)
+            return
         self.root.withdraw()
         self.root.update_idletasks()
         time.sleep(0.06)
@@ -1035,7 +1151,7 @@ class Widget:
         if self._stop:
             return
         try:
-            if not self._hidden:
+            if not self._hidden and not self._embedded:
                 h = user32.GetAncestor(wintypes.HWND(self.root.winfo_id()), 2)
                 if h:
                     self.hwnd = h
@@ -1134,7 +1250,9 @@ class Widget:
             if bar != self._last_bar:
                 self._last_bar = bar
                 self.relayout()
-            fs = self.fullscreen_foreground()
+            if self._embedded:
+                self._check_embed()
+            fs = self.fullscreen_foreground() if not self._embedded else False
             if fs and not self._hidden:
                 self.root.withdraw()
                 self._hidden = True
@@ -1332,8 +1450,13 @@ class Widget:
             self._w = w
             self.canvas.config(width=w, height=sc(H))
             if old and self._placed:      # 数据变长/变短时同步窗口宽度
-                self.root.geometry("%dx%d+%d+%d" % (w, sc(H), self.root.winfo_x(),
-                                                    self.root.winfo_y()))
+                if self._embedded:
+                    user32.MoveWindow(wintypes.HWND(self.hwnd), self._cx,
+                                      self._cy, int(w), sc(H), True)
+                else:
+                    self.root.geometry("%dx%d+%d+%d"
+                                       % (w, sc(H), self.root.winfo_x(),
+                                          self.root.winfo_y()))
         return w
 
     def _log_err(self, tag):
@@ -1345,6 +1468,12 @@ class Widget:
 
     def quit(self):
         self._stop = True
+        try:
+            if self._embedded and self.hwnd:
+                user32.ShowWindow(wintypes.HWND(self.hwnd), 0)
+                user32.SetParent(wintypes.HWND(self.hwnd), None)
+        except Exception:
+            pass
         try:
             if self.panel:
                 self.panel.destroy()
