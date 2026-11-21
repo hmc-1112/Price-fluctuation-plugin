@@ -7,7 +7,7 @@ TickerBar - 任务栏行情条
 
 MIT License
 """
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 import os
 import re
 import sys
@@ -43,10 +43,46 @@ STARTUP_DIR = os.path.join(os.environ.get("APPDATA", ""),
 LNK_PATH = os.path.join(STARTUP_DIR, "任务栏行情条.lnk")
 OLD_LNK = os.path.join(STARTUP_DIR, "黄金上证行情挂件.lnk")   # 旧版，清理用
 
-H = 40
+H = 40                      # 逻辑高度（96dpi 基准），渲染时按 DPI 放大
 PAD_L, PAD_R = 13, 12
 GAP_GROUP = 22
-S = 3
+S = 3                       # 超采样倍数
+SCALE = 1.0                 # 当前 DPI 缩放比（1.0 = 96dpi）
+
+
+def sc(v):
+    """逻辑像素 -> 当前 DPI 下的物理像素"""
+    return int(round(v * SCALE))
+
+
+def apply_dpi(scale):
+    global SCALE
+    SCALE = max(1.0, min(2.5, float(scale or 1.0)))
+
+
+def init_dpi():
+    """启用 Per-Monitor V2 DPI 感知，返回缩放比。必须先于任何窗口创建调用"""
+    try:
+        user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                user32.SetProcessDPIAware()
+            except Exception:
+                pass
+    try:
+        return user32.GetDpiForSystem() / 96.0
+    except Exception:
+        pass
+    try:
+        hdc = user32.GetDC(0)
+        dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)
+        user32.ReleaseDC(0, hdc)
+        return dpi / 96.0 if dpi else 1.0
+    except Exception:
+        return 1.0
 STALE_SEC = 600
 GUARD_MS = 150
 
@@ -69,6 +105,9 @@ user32.IsZoomed.argtypes = [wintypes.HWND]
 user32.IsZoomed.restype = wintypes.BOOL
 user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
 user32.GetCursorPos.restype = wintypes.BOOL
+user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+user32.GetDpiForWindow.restype = wintypes.UINT
+user32.GetDpiForSystem.restype = wintypes.UINT
 
 T_LIGHT = {
     "pill": (232, 233, 235),
@@ -158,34 +197,62 @@ def sample_taskbar_color(default):
         return default
 
 
+def _busy_columns(row, width, thr=16):
+    """以局部均值为背景做差，标记图标所在列；可抗半透明任务栏透出的壁纸纹理"""
+    win = max(25, width // 32)
+    if win % 2 == 0:
+        win += 1
+    pre = [[0] * (width + 1) for _ in range(3)]
+    for i, p in enumerate(row):
+        pre[0][i + 1] = pre[0][i] + p[0]
+        pre[1][i + 1] = pre[1][i] + p[1]
+        pre[2][i + 1] = pre[2][i] + p[2]
+    half = win // 2
+    busy = bytearray(width)
+    for x in range(width):
+        lo = max(0, x - half)
+        hi = min(width, x + half + 1)
+        n = float(hi - lo)
+        r = row[x]
+        d = max(abs(r[c] - (pre[c][hi] - pre[c][lo]) / n) for c in range(3))
+        if d > thr:
+            busy[x] = 1
+    return busy
+
+
 def scan_free_slot(need_w):
     """
-    扫描任务栏，返回最左侧能容纳 need_w 且不压住任何图标的位置（屏幕 x）。
-    原理：逐列比对相邻像素跳变，标记图标占据区间，再找第一段足够长的空档。
+    返回任务栏上最左侧、能放下 need_w 且不压住图标的屏幕 x。
+    采样多行合并占用区，避免单个图标只占部分高度时漏检。
     """
+    l, t, r, b = taskbar_rect()
+    width = max(0, r - l)
+    if width < 40:
+        return l + sc(8)
     try:
         from PIL import ImageGrab
-        l, t, r, b = taskbar_rect()
-        y = t + (b - t) // 2
-        im = ImageGrab.grab(bbox=(l, y, r, y + 1))
-        width = r - l
-        row = [im.getpixel((x, 0)) for x in range(width)]
+        hgt = max(4, b - t)
+        ys = [t + max(1, min(hgt - 2, int(hgt * f))) for f in (0.35, 0.5, 0.65)]
+        im = ImageGrab.grab(bbox=(l, ys[0], r, ys[-1] + 1))
         busy = bytearray(width)
-        for x in range(1, width):
-            d = max(abs(row[x][c] - row[x - 1][c]) for c in range(3))
-            if d > 4:
-                lo, hi = max(0, x - 26), min(width, x + 27)
-                for k in range(lo, hi):
-                    busy[k] = 1
-        run = 0
+        for y in ys:
+            row = [im.getpixel((x, y - ys[0])) for x in range(width)]
+            for x, v in enumerate(_busy_columns(row, width)):
+                if v:
+                    busy[x] = 1
+        need = int(need_w) + sc(16)
+        best_start, best_len, run = 0, 0, 0
         for x in range(width):
             run = 0 if busy[x] else run + 1
-            if run >= need_w + 16:
-                start = x - run + 1
-                return l + start + 8
+            if run > best_len:
+                best_len, best_start = run, x - run + 1
+            if run >= need:
+                return l + (x - run + 1) + sc(8)
+        if best_len >= need_w:                      # 够宽就用最长空档
+            return l + best_start + sc(8)
+        return l + sc(8)
     except Exception:
-        pass
-    return taskbar_rect()[0] + 8
+        return l + sc(8)
 
 
 # ---------------------------------------------------------------- 配置
@@ -616,13 +683,13 @@ class Painter:
                 x += txt(x, p["arrow"], self.f_pct, c) + 2
             txt(x, p["pct_s"], self.f_pct, c)
             x = gx + p["w"]
-            self.ranges.append((g[0], gx, gx + p["w"]))
+            self.ranges.append((g[0], gx * SCALE, (gx + p["w"]) * SCALE))
 
         if closed:
             txt(W - PAD_R, time_s, self.f_cn_sm, t["gray"], anchor="rm")
         else:
             txt(W - PAD_R, time_s, self.f_time, t["time"], anchor="rm")
-        return img.resize((W, H), Image.LANCZOS)
+        return img.resize((max(1, sc(W)), max(1, sc(H))), Image.LANCZOS)
 
 
     # ---------------------------------------------------------- 分时面板
@@ -715,7 +782,7 @@ class Painter:
                 d.text(((W // 2) * PS, (Hh - 11) * PS), "昨收 %s" % fmt(prev),
                        font=f_cn, fill=t["time"], anchor="mm")
 
-        return img.resize((W, Hh), Image.LANCZOS)
+        return img.resize((max(1, sc(W)), max(1, sc(Hh))), Image.LANCZOS)
 
 
 # ---------------------------------------------------------------- 主窗口
@@ -744,7 +811,7 @@ class Widget:
             pass
         self.root.attributes("-topmost", True)
 
-        self.canvas = tk.Canvas(self.root, width=200, height=H, highlightthickness=0,
+        self.canvas = tk.Canvas(self.root, width=200, height=sc(H), highlightthickness=0,
                                 bd=0, bg=self._hex(self.key))
         self.canvas.pack()
         self._card = self.canvas.create_image(0, 0, anchor="nw")
@@ -802,7 +869,7 @@ class Widget:
         except Exception:
             pass
         p.attributes("-topmost", True)
-        c = tk.Canvas(p, width=PANEL_W, height=PANEL_H, highlightthickness=0,
+        c = tk.Canvas(p, width=sc(PANEL_W), height=sc(PANEL_H), highlightthickness=0,
                       bd=0, bg=self._hex(self.key))
         c.pack()
         self._panel_img = c.create_image(0, 0, anchor="nw")
@@ -821,9 +888,9 @@ class Widget:
 
     def _place_panel(self):
         sw = user32.GetSystemMetrics(0)
-        x = max(4, min(self.root.winfo_x(), sw - PANEL_W - 6))
-        y = max(4, self.root.winfo_y() - PANEL_H - 6)
-        self.panel.geometry("%dx%d+%d+%d" % (PANEL_W, PANEL_H, x, y))
+        x = max(4, min(self.root.winfo_x(), sw - sc(PANEL_W) - 6))
+        y = max(4, self.root.winfo_y() - sc(PANEL_H) - 6)
+        self.panel.geometry("%dx%d+%d+%d" % (sc(PANEL_W), sc(PANEL_H), x, y))
 
     def _render_panel(self, force=False):
         if not self._panel_key or not self.panel:
@@ -902,10 +969,10 @@ class Widget:
             user32.GetCursorPos(ctypes.byref(pt))
             if self.panel and self.panel.winfo_viewable():
                 px, py = self.panel.winfo_x(), self.panel.winfo_y()
-                if px <= pt.x <= px + PANEL_W and py <= pt.y <= py + PANEL_H:
+                if px <= pt.x <= px + sc(PANEL_W) and py <= pt.y <= py + sc(PANEL_H):
                     return
             bx, by, bw = self.root.winfo_x(), self.root.winfo_y(), self._w
-            if bx <= pt.x <= bx + bw and by <= pt.y <= by + H:
+            if bx <= pt.x <= bx + bw and by <= pt.y <= by + sc(H):
                 return
         except Exception:
             pass
@@ -931,7 +998,7 @@ class Widget:
         x = scan_free_slot(w)
         if x + w > r - 8:
             x = max(l + 8, r - w - 8)
-        self.root.geometry("%dx%d+%d+%d" % (w, H, x, y))
+        self.root.geometry("%dx%d+%d+%d" % (w, sc(H), x, y))
         self.cfg["x"] = x
         save_conf(self.cfg)
 
@@ -962,7 +1029,7 @@ class Widget:
             if not self.hwnd:
                 return
             pt = wintypes.POINT(self.root.winfo_x() + self._w // 2,
-                                self.root.winfo_y() + H // 2)
+                                self.root.winfo_y() + sc(H) // 2)
             h = user32.WindowFromPoint(pt)
             if not h:
                 return
@@ -996,6 +1063,25 @@ class Widget:
                     and r.bottom >= bar_bottom - 1)
         except Exception:
             return False
+
+    def _check_dpi(self):
+        """显示器缩放变化后重新布局"""
+        try:
+            d = user32.GetDpiForWindow(wintypes.HWND(self.hwnd)) / 96.0
+        except Exception:
+            return
+        if d <= 0.5 or abs(d - SCALE) < 0.01:
+            return
+        apply_dpi(d)
+        self._photo = None
+        self.canvas.config(height=sc(H))
+        self.canvas.delete("all")
+        self._card = self.canvas.create_image(0, 0, anchor="nw")
+        self._panel_photo = None
+        if self.panel:
+            self.panel_canvas.config(width=sc(PANEL_W), height=sc(PANEL_H))
+        self.relayout()
+        log("DPI 变化 -> %.2f" % SCALE)
 
     # ---------- 交易时段
     def _update_session(self):
@@ -1038,6 +1124,7 @@ class Widget:
                 self._ensure_trend(self._panel_key)
                 self._render_panel()
             self._update_session()
+            self._check_dpi()
             self.draw()
         except Exception:
             self._log_err("TICK")
@@ -1219,9 +1306,9 @@ class Widget:
         if w != self._w:
             old = self._w
             self._w = w
-            self.canvas.config(width=w, height=H)
+            self.canvas.config(width=w, height=sc(H))
             if old and self._placed:      # 数据变长/变短时同步窗口宽度
-                self.root.geometry("%dx%d+%d+%d" % (w, H, self.root.winfo_x(),
+                self.root.geometry("%dx%d+%d+%d" % (w, sc(H), self.root.winfo_x(),
                                                     self.root.winfo_y()))
         return w
 
@@ -1258,10 +1345,7 @@ def main():
         return
     if not single_instance():
         return
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        pass
+    apply_dpi(init_dpi())
     if os.path.exists(OLD_LNK):
         try:
             os.remove(OLD_LNK)
