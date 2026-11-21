@@ -7,7 +7,7 @@ TickerBar - 任务栏行情条
 
 MIT License
 """
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 import os
 import re
 import sys
@@ -166,6 +166,7 @@ DEFAULT_CFG = {
     "gold_source": "sge",
     "show": {"gold": True, "sh": True, "sz": True},
     "features": {"hover": True},
+    "reposition_sec": 5,       # 自动检测任务栏占用的间隔（秒），0=关闭
     "x": None,
     "autostart": True,
 }
@@ -1102,10 +1103,11 @@ class Widget:
         except Exception:
             pass
 
-    def _place_embedded(self, w=None):
+    def _place_embedded(self, w=None, x=None):
         w = w or self._w
         l, t, r, b = taskbar_rect()
-        x = scan_free_slot(w)
+        if x is None:
+            x = scan_free_slot(w)
         if x + w > r - sc(8):
             x = max(l + sc(8), r - w - sc(8))
         y = t + max(0, (b - t - sc(H)) // 2)
@@ -1114,8 +1116,45 @@ class Widget:
         self._cx, self._cy = int(pt.x), int(pt.y)
         user32.MoveWindow(wintypes.HWND(self.hwnd), self._cx, self._cy,
                           int(w), sc(H), True)
+        self._screen_x = x
         self.cfg["x"] = x
         save_conf(self.cfg)
+
+    # ---------- 重新定位
+    def reposition(self, force=False):
+        """重新扫描任务栏；位置变化才移动，避免无谓跳动"""
+        try:
+            if self._hidden:
+                return
+            if not force and self._panel_key:
+                return
+            if self._embedded:
+                user32.ShowWindow(wintypes.HWND(self.hwnd), 0)
+                time.sleep(0.03)
+                l, t, r, b = taskbar_rect()
+                x = scan_free_slot(self._w)
+                if x + self._w > r - sc(8):
+                    x = max(l + sc(8), r - self._w - sc(8))
+                if force or abs(x - getattr(self, "_screen_x", -999)) > 6:
+                    self._place_embedded(self._w, x)
+                user32.ShowWindow(wintypes.HWND(self.hwnd), 5)
+            else:
+                self.root.withdraw()
+                self.root.update_idletasks()
+                time.sleep(0.06)
+                l, tp, r, b = taskbar_rect()
+                x = scan_free_slot(self._w)
+                if x + self._w > r - sc(8):
+                    x = max(l + sc(8), r - self._w - sc(8))
+                if force or abs(x - getattr(self, "_screen_x", -999)) > 6:
+                    y = tp + max(0, (b - tp - sc(H)) // 2)
+                    self.root.geometry("%dx%d+%d+%d" % (self._w, sc(H), x, y))
+                    self._screen_x = x
+                    self.cfg["x"] = x
+                    save_conf(self.cfg)
+                self.root.deiconify()
+        except Exception as e:
+            self._log_err("REPOS")
 
     # ---------- 定位
     def place(self, w=None):
@@ -1129,6 +1168,7 @@ class Widget:
         if x + w > r - sc(8):
             x = max(l + sc(8), r - w - sc(8))
         self.root.geometry("%dx%d+%d+%d" % (w, sc(H), x, y))
+        self._screen_x = x
         self.cfg["x"] = x
         save_conf(self.cfg)
 
@@ -1267,6 +1307,13 @@ class Widget:
                 self._render_panel()
             self._update_session()
             self._check_dpi()
+            self._tick_n = getattr(self, "_tick_n", 0) + 1
+            try:
+                iv = int(self.cfg.get("reposition_sec", 5))
+            except Exception:
+                iv = 5
+            if iv > 0 and self._tick_n % iv == 0:
+                self.reposition()
             self.draw()
         except Exception:
             self._log_err("TICK")
@@ -1312,8 +1359,12 @@ class Widget:
         self.menu.add_checkbutton(label="悬停显示分时图", variable=self.v_hover,
                                   command=self.toggle_hover)
 
-        self.menu.add_separator()
-        self.menu.add_command(label="立即刷新", command=self.refresh_now)
+        m_ref = tk.Menu(self.menu, tearoff=0, bg="#ffffff", fg="#1b1f24",
+                        activebackground="#e8f0fe", activeforeground="#000000",
+                        bd=0, font=("Microsoft YaHei", 9))
+        m_ref.add_command(label="仅刷新行情", command=self.refresh_now)
+        m_ref.add_command(label="刷新并重新定位", command=self.refresh_move)
+        self.menu.add_cascade(label="立即刷新", menu=m_ref)
         self.v_boot = tk.BooleanVar(value=self.autostart_on())
         self.menu.add_checkbutton(label="开机自动启动", variable=self.v_boot,
                                   command=self.toggle_autostart)
@@ -1356,6 +1407,10 @@ class Widget:
         self.cfg["gold_source"] = self.v_src.get()
         save_conf(self.cfg)
         self.refresh_now()
+
+    def refresh_move(self):
+        self.refresh_now()
+        self.reposition(force=True)
 
     def refresh_now(self):
         self._paused = False
